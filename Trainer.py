@@ -7,20 +7,24 @@ import cv2
 dataset = get_data()
 #----------------------------------------------
 #Hyper parameters
-batch_size = 16
+batch_size = 18
 img_size = 128
 latent_dim = 100
-d_thresh = 125
+d_thresh = 20
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 #----------------------------------------------
 #Training Loop
 # Initialize generator and discriminator and loss functions
-bceLoss = torch.nn.BCELoss()
+bceLoss = RealativisticLoss()
 generator = Generator(img_size, latent_dim)
 multi_discriminator = MultiDiscriminator(img_size)
 generator.apply(weights_init_normal)
 multi_discriminator.apply(weights_init_normal)
+
+if False:
+    generator.load_state_dict(torch.load('generator_model.pt'))
+    multi_discriminator.load_state_dict(torch.load('multi_discriminator_model.pt'))
 
 cuda = True if torch.cuda.is_available() else False
 if cuda:
@@ -28,12 +32,12 @@ if cuda:
     multi_discriminator.cuda()
     bceLoss.cuda()
 # Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=0.0001, betas=(0.5, 0.9999))
-optimizer_D = torch.optim.Adam(multi_discriminator.parameters(), lr=0.0004, betas=(0.5, 0.9999))
-schedulerG = torch.optim.lr_scheduler.StepLR(optimizer_G, step_size=500, gamma=0.5)
-schedulerD = torch.optim.lr_scheduler.StepLR(optimizer_D, step_size=500, gamma=0.5)
+optimizer_G = torch.optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.9999))
+optimizer_D = torch.optim.Adam(multi_discriminator.parameters(), lr=0.0002, betas=(0.5, 0.9999))
+#schedulerG = torch.optim.lr_scheduler.StepLR(optimizer_G, step_size=40, gamma=0.1)
+#schedulerD = torch.optim.lr_scheduler.StepLR(optimizer_D, step_size=40, gamma=0.1)
 
-loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 training_epochs = 5000
 for epoch in range(5000):
     for i, data in enumerate(loader, 0):
@@ -60,58 +64,39 @@ for epoch in range(5000):
         real_labels = torch.ones((disc_inputs.shape[0], 1), device=device)
         fake_labels = torch.zeros((gen_inputs.shape[0], 1), device=device)
 
-        gen_imgs, kld_loss = generator(gen_inputs, gen_maps_large, gen_maps_medium, gen_maps_small, gen_maps_tiny,
-                                       gen_maps_micro)
-
-        optimizer_D.zero_grad()
-        imgs_cat = torch.cat((disc_inputs, gen_imgs.detach()), 0)
-        d1_out, d2_out = multi_discriminator(imgs_cat, large_maps_cat, medium_maps_cat, small_maps_cat, tiny_maps_cat, micro_maps_cat)
-        loss1 = bceLoss((d1_out[0][d1_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss2 = bceLoss((d1_out[1][d1_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss3 = bceLoss((d1_out[2][d1_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss4 = bceLoss((d1_out[3][d1_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss5 = bceLoss((d1_out[4][d1_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss6 = bceLoss((d2_out[0][d2_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss7 = bceLoss((d2_out[1][d2_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss8 = bceLoss((d2_out[2][d2_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss9 = bceLoss((d2_out[3][d2_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss10 = bceLoss((d2_out[4][d2_out[0].shape[0]//2:]).mean(), torch.tensor(0).to(device).float())
-        loss11 = bceLoss((d1_out[0][:d1_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss12 = bceLoss((d1_out[1][:d1_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss13 = bceLoss((d1_out[2][:d1_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss14 = bceLoss((d1_out[3][:d1_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss15 = bceLoss((d1_out[4][:d1_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss16 = bceLoss((d2_out[0][:d2_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss17 = bceLoss((d2_out[1][:d2_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss18 = bceLoss((d2_out[2][:d2_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss19 = bceLoss((d2_out[3][:d2_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-        loss20 = bceLoss((d2_out[4][:d2_out[0].shape[0]//2]).mean(), torch.tensor(1).to(device).float())
-
-        d_real_loss = (loss1 + loss2 + loss6 + loss7 + loss10 + loss11 + loss16 + loss17)
-        d_real_loss.backward()
-        optimizer_D.step()
-
-        #discriminators
         optimizer_G.zero_grad()
+        gen_imgs, kld_loss = generator(gen_inputs, gen_maps_large, gen_maps_medium, gen_maps_small, gen_maps_tiny, gen_maps_micro)
         imgs_cat = torch.cat((disc_inputs, gen_imgs), 0)
-        g1_out, g2_out = multi_discriminator(imgs_cat, large_maps_cat, medium_maps_cat, small_maps_cat, tiny_maps_cat, micro_maps_cat)
-        loss1 = bceLoss((g1_out[0][g1_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss2 = bceLoss((g1_out[1][g1_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss3 = bceLoss((g1_out[2][g1_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss4 = bceLoss((g1_out[3][g1_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss5 = bceLoss((g1_out[4][g1_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss6 = bceLoss((g2_out[0][g2_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss7 = bceLoss((g2_out[1][g2_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss8 = bceLoss((g2_out[2][g2_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss9 = bceLoss((g2_out[3][g2_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-        loss10 = bceLoss((g2_out[4][g2_out[0].shape[0]//2:]).mean(), torch.tensor(1).to(device).float())
-
-        g_fake_loss = (loss1 + loss2 + loss6 + loss7) + kld_loss
+        d_out, d2_out = multi_discriminator(imgs_cat, large_maps_cat, medium_maps_cat, small_maps_cat, tiny_maps_cat, micro_maps_cat)
+        loss1 = bceLoss(d_out[0][d_out[0].shape[0]//2:], d_out[0][:d_out[0].shape[0]//2], Gan=True)/32
+        loss2 = bceLoss(d_out[1][d_out[1].shape[0]//2:], d_out[1][:d_out[1].shape[0]//2], Gan=True)/64
+        loss3 = bceLoss(d2_out[0][d2_out[0].shape[0]//2:], d2_out[0][:d2_out[0].shape[0]//2], Gan=True)
+        loss4 = bceLoss(d2_out[1][d2_out[1].shape[0]//2:], d2_out[1][:d2_out[1].shape[0]//2], Gan=True)/2
+        g_fake_loss = loss1 + loss2 + loss3 + loss4 + kld_loss
         g_fake_loss.backward()
         optimizer_G.step()
 
-    schedulerG.step()
-    schedulerD.step()
+        imgs_cat = torch.cat((disc_inputs, gen_imgs.detach()), 0)
+        d_out, d2_out = multi_discriminator(imgs_cat, large_maps_cat, medium_maps_cat, small_maps_cat, tiny_maps_cat, micro_maps_cat)
+        loss1 = bceLoss(d_out[0][d_out[0].shape[0]//2:], d_out[0][:d_out[0].shape[0]//2])/32
+        loss2 = bceLoss(d_out[1][d_out[1].shape[0]//2:], d_out[1][:d_out[1].shape[0]//2])/64
+        loss3 = bceLoss(d2_out[0][d2_out[0].shape[0]//2:], d2_out[0][:d2_out[0].shape[0]//2])
+        loss4 = bceLoss(d2_out[1][d2_out[1].shape[0]//2:], d2_out[1][:d2_out[1].shape[0]//2])/2
+
+        d_real_loss = loss1 + loss2 + loss3 + loss4
+        d_real_loss.backward()
+        optimizer_D.step()
+    '''
+    if  epoch > 0 and epoch < 50:
+        schedulerG.step()
+        schedulerD.step()
+    '''
+
+    if epoch % 50==0 and epoch > 0:
+        print("saving...")
+        torch.save(generator.state_dict(), 'generator_model.pt')
+        torch.save(multi_discriminator.state_dict(), 'multi_discriminator_model.pt')
+        print("saving complete")
 
     if epoch % 5 == 0:
         print("epoch " + str(epoch) + "/%d" % training_epochs)
@@ -119,11 +104,11 @@ for epoch in range(5000):
         print("Discriminator Loss: %.2f" % d_real_loss)
         print("KLD Loss: %.2f" % kld_loss)
         im = torchvision.utils.make_grid(gen_imgs[:25].detach().cpu(), nrow=5, padding=2, normalize=True)
-        torchvision.utils.save_image(gen_imgs[0].detach().cpu(), "images/Pokemon%dA.png" % epoch, normalize=True)
-        torchvision.utils.save_image(gen_imgs[1].detach().cpu(), "images/Pokemon%dB.png" % epoch, normalize=True)
-        torchvision.utils.save_image(gen_imgs[2].detach().cpu(), "images/Pokemon%dC.png" % epoch, normalize=True)
-        torchvision.utils.save_image(gen_imgs[3].detach().cpu(), "images/Pokemon%dD.png" % epoch, normalize=True)
-        #torchvision.utils.save_image(gen_imgs[4].detach().cpu(), "images/Pokemon%dE.png" % epoch, normalize=True)
+        torchvision.utils.save_image(gen_imgs[0].detach().cpu(), "images/Pokemon%dA.png" % epoch, normalize=False)
+        torchvision.utils.save_image(gen_imgs[1].detach().cpu(), "images/Pokemon%dB.png" % epoch, normalize=False)
+        torchvision.utils.save_image(gen_imgs[2].detach().cpu(), "images/Pokemon%dC.png" % epoch, normalize=False)
+        torchvision.utils.save_image(gen_imgs[3].detach().cpu(), "images/Pokemon%dD.png" % epoch, normalize=False)
+        torchvision.utils.save_image(gen_imgs[4].detach().cpu(), "images/Pokemon%dE.png" % epoch, normalize=False)
         torchvision.utils.save_image(im, "images/Pokemon%dGrid.png" % epoch, normalize=True)
         gen_imgs = torch.transpose(gen_imgs, 1, 2)
         gen_imgs = torch.transpose(gen_imgs, 2, 3)

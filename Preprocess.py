@@ -3,7 +3,7 @@ from Models import *
 import cv2
 
 def get_data():
-    d_thresh = 50
+    d_thresh = 20
     img_size = 128
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,14 +44,15 @@ def get_data():
                 pokemon_image[trans_mask] = [0, 0, 0]
                 poke_map = cv2.cvtColor(poke_map, cv2.COLOR_BGRA2BGR)
                 poke_map[trans_mask] = [0, 0, 0]
-                poke_map = cv2.cvtColor(poke_map, cv2.COLOR_BGR2GRAY)
+                #poke_map = cv2.cvtColor(poke_map, cv2.COLOR_BGR2GRAY)
                 pokemon_image = cv2.resize(pokemon_image, (img_size, img_size))
+                poke_map = cv2.resize(poke_map, (img_size, img_size))
                 input_data.append(pokemon_image)
-                large_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size, img_size)), axis=0)).float())
-                medium_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2, img_size//2)), axis=0)).float())
-                small_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2, img_size//2//2)), axis=0)).float())
-                tiny_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2//2, img_size//2//2//2)), axis=0)).float())
-                micro_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2//2//2, img_size//2//2//2//2)), axis=0)).float())
+                #large_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size, img_size)), axis=0)).float().to(device))
+                #medium_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2, img_size//2)), axis=0)).float().to(device))
+                #small_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2, img_size//2//2)), axis=0)).float().to(device))
+                #tiny_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2//2, img_size//2//2//2)), axis=0)).float().to(device))
+                #micro_feature_data.append(torch.tensor(np.expand_dims(cv2.resize(poke_map, (img_size//2//2//2//2, img_size//2//2//2//2)), axis=0)).float().to(device))
                 '''
                 poke_map1 = np.zeros((poke_map.shape[0], poke_map.shape[1]))
                 poke_map2 = np.zeros((poke_map.shape[0], poke_map.shape[1]))
@@ -189,32 +190,31 @@ def get_data():
                 '''
                 idx+=1
 
-
+    '''
     input_data = torch.tensor(input_data)
     input_data = input_data.transpose(2,3).transpose(1,2).float()
-    '''
+
     large_feature_data = torch.stack(large_feature_data).float()
     medium_feature_data = torch.stack(medium_feature_data).float()
     small_feature_data = torch.stack(small_feature_data).float()
     tiny_feature_data = torch.stack(tiny_feature_data).float()
     micro_feature_data = torch.stack(micro_feature_data).float()
-    '''
-    print(input_data.shape[0])
-    '''
+    
+
     torch.save(input_data, 'input_data.pt')
     torch.save(large_feature_data, 'large_data.pt')
     torch.save(medium_feature_data, 'medium_data.pt')
     torch.save(small_feature_data, 'small_data.pt')
     torch.save(tiny_feature_data, 'tiny_data.pt')
     torch.save(micro_feature_data, 'micro_data.pt')
-
+    '''
     input_data = torch.load('input_data.pt')
     large_feature_data = torch.load('large_data.pt')
     medium_feature_data = torch.load('medium_data.pt')
     small_feature_data = torch.load('small_data.pt')
     tiny_feature_data = torch.load('tiny_data.pt')
     micro_feature_data = torch.load('micro_data.pt')
-    '''
+    print(input_data.shape[0])
     dataset = [input_data, large_feature_data, medium_feature_data, small_feature_data, tiny_feature_data, micro_feature_data]
 
     #----------------------------------------------
