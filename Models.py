@@ -6,7 +6,7 @@ import torchvision
 import torch.nn.functional as F
 from collections import OrderedDict
 
-def noiseer(image, d=False):
+def noiseer(image):
     row,col,ch = image.shape
     mean = 0
     var = 0.1
@@ -14,8 +14,6 @@ def noiseer(image, d=False):
     gauss = np.random.normal(mean,sigma,(row,col,ch))
     gauss = torch.tensor((gauss.reshape(row,col,ch))).float().to(device='cuda')
     noisy = image + gauss
-    if d:
-        noisy = F.avg_pool2d(noisy, kernel_size=3, stride=2, padding=[1, 1], count_include_pad=False)
     return noisy
 
 #----------------------------------------------
@@ -52,11 +50,11 @@ class ResBlock(nn.Module):
 
         self.PostA = nn.Sequential(
             nn.LeakyReLU(0.2),
-            nn.Conv2d(size, size_middle, 3, padding=1),
+            nn.Conv2d(size, size_middle, kernel_size=3, padding=1),
         )
         self.PostB = nn.Sequential(
             nn.LeakyReLU(0.2),
-            nn.Conv2d(size_middle, size_out, 3, padding=1)
+            nn.Conv2d(size_middle, size_out, kernel_size=3, padding=1)
         )
         self.PostC = nn.Sequential(
             nn.Conv2d(size, size_out, kernel_size=1, bias=False)
@@ -82,32 +80,32 @@ class Generator(nn.Module):
         self.IM_ENCODER = Encoder(img_size)
         self.KLD = KLDLoss()
         self.input_linear = torch.nn.Linear(img_size*2, img_size * 8 * img_size//16 * img_size//16)
-        self.r = ResBlock(self.img_size*8, self.img_size*4)
-        self.r0 = ResBlock(self.img_size*4, self.img_size*2)
-        self.r1 = ResBlock(self.img_size*2, self.img_size)
-        self.r2 = ResBlock(self.img_size, self.img_size//2)
-        self.r3 = ResBlock(self.img_size//2, self.img_size//4)
+        self.r1 = ResBlock(1024, 512)
+        self.r2 = ResBlock(512, 256)
+        self.r3 = ResBlock(256, 128)
+        self.r4 = ResBlock(128, 64)
+        self.r5 = ResBlock(64, 32)
+        self.CT3 = nn.Sequential(nn.ReLU(True),
+                                 nn.Conv2d(32, 3, 3, padding=1, bias=False),
+                                 nn.Tanh())
         self.up = nn.Upsample(scale_factor=2)
-        self.outconv = nn.Sequential(nn.LeakyReLU(0.2),
-                       nn.Conv2d(img_size//4, 3, 3, padding=1))
 
     def forward(self, img, large_map, medium_map, small_map, tiny_map, micro_map):
         mean, var = self.IM_ENCODER(img)
         z = reparameterize(mean, var)
-        kld_loss = self.KLD(mean, var) * 0.1
+        kld_loss = self.KLD(mean, var) * 0.05
         z = self.input_linear(z)
-        z = z.view(-1, self.img_size*8, self.img_size//16, self.img_size//16)
-        out = self.r(z, micro_map)
+        z = z.view(-1, self.img_size * 8, self.img_size // 16, self.img_size // 16)
+        out = self.r1(z, micro_map)
         out = self.up(out)
-        out = self.r0(out, tiny_map)
-        out = self.up(out)
-        out = self.r1(out, small_map)
-        out = self.up(out)
-        out = self.r2(out, medium_map)
+        out = self.r2(out, tiny_map)
         out = self.up(out)
         out = self.r3(out, small_map)
-        out = self.outconv(out)
-        out = F.tanh(out)
+        out = self.up(out)
+        out = self.r4(out, medium_map)
+        out = self.up(out)
+        out = self.r5(out, large_map)
+        out = self.CT3(out)
         return out, kld_loss
 
 #Multi Discriminator ------------------
@@ -115,23 +113,12 @@ class MultiDiscriminator(nn.Module):
     def __init__(self, img_size):
         super(MultiDiscriminator, self).__init__()
         self.d1 = Discriminator(img_size)
-        self.d2 = Discriminator(img_size//2)
-        #self.d3 = Discriminator(img_size//2//2)
         self.d6 = Discriminator2(img_size)
-        self.d7 = Discriminator2(img_size//2)
-        #self.d8 = Discriminator2(img_size//2//2)
-
 
     def forward(self, img, large_map, medium_map, small_map, tiny_map, micro_map):
         out1 = self.d1(img, large_map)
         out6 = self.d6(img)
-        img_out = F.avg_pool2d(img, kernel_size=3, stride=2, padding=[1, 1], count_include_pad=False)
-        out2 = self.d2(img_out, medium_map)
-        out7 = self.d7(img_out)
-        #img_out = F.avg_pool2d(img_out, kernel_size=3, stride=2, padding=[1, 1], count_include_pad=False)
-        #out3 = self.d3(img_out, small_map)
-        #out8 = self.d8(img_out)
-        return ([out1, out2], [out6, out7])
+        return ([out1], [out6])
 
 #----------------------------------------------
 #Discriminator
@@ -140,26 +127,35 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         layers = OrderedDict()
         self.img_size = img_size
-        self.inlayer = nn.Sequential(nn.Conv2d(11, img_size//2, 4, 2, 1, bias=False),
-                       nn.LeakyReLU(0.2, inplace=True))
         layer_filter = 0.5
-        q=0
+        self.inlayer = nn.Sequential(nn.Conv2d(11, int(img_size * layer_filter), 4, 2, 1),
+                                     nn.LeakyReLU(0.2, False),
+                                     nn.Dropout2d(0.2))
+        q = 0
         for i in range(int(np.log(img_size) / np.log(2)) - 3):
-            layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter*2),  4, 2, 1)
-            layers[str(q+1)] = nn.InstanceNorm2d(int(img_size*layer_filter*2))
-            layers[str(q+2)] = nn.LeakyReLU(0.2, False)
-            layers[str(q+3)] = nn.Dropout3d(0.3)
-            layer_filter=layer_filter*2
-            q = q+4
+            if layer_filter == 4:
+                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter), 4, 2, 1)
+                layers[str(q + 1)] = nn.InstanceNorm2d(int(img_size * layer_filter))
+                layers[str(q + 2)] = nn.LeakyReLU(0.2, False)
+                layers[str(q + 3)] = nn.Dropout2d(0.2)
+                q=q+4
+            else:
+                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter * 2), 4, 2, 1)
+                layers[str(q + 1)] = nn.InstanceNorm2d(int(img_size * layer_filter * 2))
+                layers[str(q + 2)] = nn.LeakyReLU(0.2, False)
+                layers[str(q + 3)] = nn.Dropout2d(0.2)
+                layer_filter = layer_filter * 2
+                q=q+4
         self.disc = nn.Sequential(layers)
-        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 4, 1, 0, bias=False))
+        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 4, 1, 0),
+                                       nn.Sigmoid())
 
     def forward(self, img, map):
         concat_tensors = torch.cat((img, map), 1)
         out = self.inlayer(concat_tensors)
         out = self.disc(out)
         out = self.outlayer1(out)
-        return out
+        return out.view(-1)
 
 # Discriminator 2
 class Discriminator2(nn.Module):
@@ -167,25 +163,31 @@ class Discriminator2(nn.Module):
         super(Discriminator2, self).__init__()
         layers = OrderedDict()
         self.img_size = img_size
-        self.inlayer = nn.Sequential(nn.Conv2d(3, img_size//2, 4, 2, 1, bias=False),
-                       nn.LeakyReLU(0.2, inplace=True))
         layer_filter = 0.5
+        self.inlayer = nn.Sequential(nn.Conv2d(3, int(img_size*layer_filter), 4, 2, 1, bias=False),
+                       nn.LeakyReLU(0.2, inplace=True))
         q=0
         for i in range(int(np.log(img_size) / np.log(2)) - 3):
-            layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter*2), 4, 2, 1)
-            layers[str(q+1)] = nn.InstanceNorm2d(int(img_size*layer_filter*2))
-            layers[str(q+2)] = nn.LeakyReLU(0.2, False)
-            layers[str(q+3)] = nn.Dropout3d(0.3)
-            layer_filter=layer_filter*2
-            q = q+4
+            if layer_filter == 4:
+                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter), 4, 2, 1, bias=False)
+                layers[str(q+1)] = nn.BatchNorm2d(int(img_size*layer_filter))
+                layers[str(q+2)] = nn.LeakyReLU(0.2, inplace=True)
+                q=q+3
+            else:
+                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter*2), 4, 2, 1, bias=False)
+                layers[str(q+1)] = nn.BatchNorm2d(int(img_size*layer_filter*2))
+                layers[str(q+2)] = nn.LeakyReLU(0.2, inplace=True)
+                layer_filter = layer_filter*2
+                q=q+3
         self.disc = nn.Sequential(layers)
-        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 3, 3, 0, bias=False))
+        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 4, 1, 0, bias=False),
+                                       nn.Sigmoid())
 
     def forward(self, img):
         out = self.inlayer(img)
         out = self.disc(out)
         out = self.outlayer1(out)
-        return out
+        return out.view(-1)
 
 class Encoder(nn.Module):
     def __init__(self, img_size):
@@ -243,21 +245,13 @@ class RealativisticLoss(torch.nn.Module):
     def __init__(self):
         super(RealativisticLoss, self).__init__()
     def forward(self, output, target, Gan=False):
-
         if Gan:
-            loss1 = torch.mean((output - torch.mean(target) - torch.Tensor(1).fill_(1).requires_grad_(False).expand_as(
-                output).to("cuda")) ** 2)
-            loss2 = torch.mean((target - torch.mean(output) + torch.Tensor(1).fill_(1).requires_grad_(False).expand_as(
-                output).to("cuda")) ** 2)
-            loss = (loss1 + loss2) / 2
+            err = (torch.mean((target - torch.mean(output) - 1) ** 2) + torch.mean(
+                (output - torch.mean(target) + 1) ** 2)) / 2
         else:
-            loss1 = torch.mean((output - torch.mean(target) + torch.Tensor(1).fill_(1).requires_grad_(False).expand_as(
-                output).to("cuda")) ** 2)
-            loss2 = torch.mean((target - torch.mean(output) - torch.Tensor(1).fill_(1).requires_grad_(False).expand_as(
-                output).to("cuda")) ** 2)
-            loss = (loss1 + loss2) / 2
-        return loss
-
+            err = (torch.mean((target - torch.mean(output) + 1) ** 2) + torch.mean(
+                (output - torch.mean(target) - 1) ** 2)) / 2
+        return err
 
 def weights_init_normal(m):
     classname = m.__class__.__name__
