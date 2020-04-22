@@ -21,17 +21,16 @@ def noiseer(image):
 class SPADE(nn.Module):
     def __init__(self, size):
         super(SPADE, self).__init__()
-        self.prev_input = nn.InstanceNorm2d(size)
+        self.prev_input = nn.BatchNorm2d(size, affine=False)
         self.shared_active = nn.Sequential(
             nn.Conv2d(8, 128, 3, padding=1),
-            nn.ReLU()
+            nn.ReLU(True)
         )
         self.lambda_conv = nn.Conv2d(128, size, 3, padding=1)
         self.beta_conv = nn.Conv2d(128, size, 3, padding=1)
 
     def forward(self, input1, input2):
         bn = self.prev_input(input1)
-        input2 = F.interpolate(input2, size=input1.size()[2:], mode='nearest')
         shared = self.shared_active(input2)
         lc = self.lambda_conv(shared)
         bc = self.beta_conv(shared)
@@ -43,31 +42,41 @@ class SPADE(nn.Module):
 class ResBlock(nn.Module):
     def __init__(self, size, size_out):
         super(ResBlock, self).__init__()
+        if size_out != size:
+            self.skip = True
+        else:
+            self.skip = False
+
         size_middle = (size + size_out) // 2
         self.SpadeA = SPADE(size)
         self.SpadeB = SPADE(size_middle)
         self.SpadeC = SPADE(size)
 
         self.PostA = nn.Sequential(
-            nn.LeakyReLU(0.2),
+            nn.ReLU(True),
             nn.Conv2d(size, size_middle, kernel_size=3, padding=1),
         )
         self.PostB = nn.Sequential(
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(size_middle, size_out, kernel_size=3, padding=1)
+            nn.ReLU(True),
+            nn.Conv2d(size_middle, size_out, kernel_size=3, padding=1),
         )
-        self.PostC = nn.Sequential(
-            nn.Conv2d(size, size_out, kernel_size=1, bias=False)
-        )
+        if self.skip:
+            self.PostC = nn.Sequential(
+                nn.ReLU(True),
+                nn.Conv2d(size, size_out, kernel_size=3, padding=1, bias=False),
+            )
 
     def forward(self, input1, input2):
         a_out = self.SpadeA(input1, input2)
         a_out = self.PostA(a_out)
         b_out = self.SpadeB(a_out, input2)
         b_out = self.PostB(b_out)
-        c_out = self.SpadeC(input1, input2)
-        c_out = self.PostC(c_out)
-        res_out = torch.add(b_out, c_out)
+        if self.skip:
+            c_out = self.SpadeC(input1, input2)
+            c_out = self.PostC(c_out)
+            res_out = torch.add(b_out, c_out)
+        else:
+            return b_out
         return res_out
 
 #----------------------------------------------
@@ -79,14 +88,16 @@ class Generator(nn.Module):
         self.latent_dim = latent_dim
         self.IM_ENCODER = Encoder(img_size)
         self.KLD = KLDLoss()
-        self.input_linear = torch.nn.Linear(img_size*2, img_size * 8 * img_size//16 * img_size//16)
-        self.r1 = ResBlock(1024, 512)
-        self.r2 = ResBlock(512, 256)
+        self.input_linear = torch.nn.Linear(img_size*2, img_size * 4 * img_size//16 * img_size//16)
+        self.r1 = ResBlock(512, 256)
+        self.r2 = ResBlock(256, 256)
         self.r3 = ResBlock(256, 128)
-        self.r4 = ResBlock(128, 64)
-        self.r5 = ResBlock(64, 32)
-        self.CT3 = nn.Sequential(nn.ReLU(True),
-                                 nn.Conv2d(32, 3, 3, padding=1, bias=False),
+        self.r4 = ResBlock(128, 128)
+        self.r5 = ResBlock(128, 64)
+        self.r6 = ResBlock(64, 64)
+        self.r7 = ResBlock(64, 32)
+        self.r8 = ResBlock(32, 16)
+        self.CT3 = nn.Sequential(nn.Conv2d(16, 3, 3, padding=1),
                                  nn.Tanh())
         self.up = nn.Upsample(scale_factor=2)
 
@@ -95,16 +106,19 @@ class Generator(nn.Module):
         z = reparameterize(mean, var)
         kld_loss = self.KLD(mean, var) * 0.05
         z = self.input_linear(z)
-        z = z.view(-1, self.img_size * 8, self.img_size // 16, self.img_size // 16)
+        z = z.view(-1, self.img_size * 4, self.img_size // 16, self.img_size // 16)
         out = self.r1(z, micro_map)
         out = self.up(out)
         out = self.r2(out, tiny_map)
+        out = self.r3(out, tiny_map)
         out = self.up(out)
-        out = self.r3(out, small_map)
+        out = self.r4(out, small_map)
+        out = self.r5(out, small_map)
         out = self.up(out)
-        out = self.r4(out, medium_map)
+        out = self.r6(out, medium_map)
+        out = self.r7(out, medium_map)
         out = self.up(out)
-        out = self.r5(out, large_map)
+        out = self.r8(out, large_map)
         out = self.CT3(out)
         return out, kld_loss
 
@@ -113,12 +127,16 @@ class MultiDiscriminator(nn.Module):
     def __init__(self, img_size):
         super(MultiDiscriminator, self).__init__()
         self.d1 = Discriminator(img_size)
-        self.d6 = Discriminator2(img_size)
-
+        self.d2 = Discriminator2(img_size)
+        self.d3 = Discriminator(img_size//2)
     def forward(self, img, large_map, medium_map, small_map, tiny_map, micro_map):
         out1 = self.d1(img, large_map)
-        out6 = self.d6(img)
-        return ([out1], [out6])
+        out2 = self.d2(img)
+        img = F.avg_pool2d(img, kernel_size=3,
+                     stride=2, padding=[1, 1],
+                     count_include_pad=False)
+        out3 = self.d3(img, medium_map)
+        return ([out1, out3], [out2])
 
 #----------------------------------------------
 #Discriminator
@@ -128,30 +146,27 @@ class Discriminator(nn.Module):
         layers = OrderedDict()
         self.img_size = img_size
         layer_filter = 0.5
-        self.inlayer = nn.Sequential(nn.Conv2d(11, int(img_size * layer_filter), 4, 2, 1),
-                                     nn.LeakyReLU(0.2, False),
-                                     nn.Dropout2d(0.2))
+        self.inlayer = nn.Sequential(nn.Conv2d(11, int(img_size * layer_filter), kernel_size=4, stride=2, padding=1),
+                                     nn.LeakyReLU(0.2, False))
         q = 0
         for i in range(int(np.log(img_size) / np.log(2)) - 3):
             if layer_filter == 4:
-                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter), 4, 2, 1)
-                layers[str(q + 1)] = nn.InstanceNorm2d(int(img_size * layer_filter))
-                layers[str(q + 2)] = nn.LeakyReLU(0.2, False)
-                layers[str(q + 3)] = nn.Dropout2d(0.2)
-                q=q+4
+                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter), kernel_size=4, stride=2, padding=1)
+                layers[str(q+1)] = nn.InstanceNorm2d(int(img_size * layer_filter), affine=False)
+                layers[str(q+2)] = nn.LeakyReLU(0.2, False)
+                q=q+3
             else:
-                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter * 2), 4, 2, 1)
-                layers[str(q + 1)] = nn.InstanceNorm2d(int(img_size * layer_filter * 2))
-                layers[str(q + 2)] = nn.LeakyReLU(0.2, False)
-                layers[str(q + 3)] = nn.Dropout2d(0.2)
-                layer_filter = layer_filter * 2
+                layers[str(q)] = nn.Conv2d(int(img_size * layer_filter), int(img_size * layer_filter * 2), kernel_size=4, stride=2, padding=1)
+                layers[str(q+1)] = nn.InstanceNorm2d(int(img_size * layer_filter * 2), affine=False)
+                layers[str(q+2)] = nn.LeakyReLU(0.2, False)
+                layers[str(q+3)] = nn.Dropout3d(0.2)
                 q=q+4
+                layer_filter = layer_filter * 2
         self.disc = nn.Sequential(layers)
-        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 4, 1, 0),
-                                       nn.Sigmoid())
+        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, kernel_size=4, stride=1, padding=0))
 
     def forward(self, img, map):
-        concat_tensors = torch.cat((img, map), 1)
+        concat_tensors = torch.cat((map, img), 1)
         out = self.inlayer(concat_tensors)
         out = self.disc(out)
         out = self.outlayer1(out)
@@ -164,24 +179,24 @@ class Discriminator2(nn.Module):
         layers = OrderedDict()
         self.img_size = img_size
         layer_filter = 0.5
-        self.inlayer = nn.Sequential(nn.Conv2d(3, int(img_size*layer_filter), 4, 2, 1, bias=False),
+        self.inlayer = nn.Sequential(nn.Conv2d(3, int(img_size*layer_filter), kernel_size=4, stride=2, padding=1, bias=False),
                        nn.LeakyReLU(0.2, inplace=True))
         q=0
         for i in range(int(np.log(img_size) / np.log(2)) - 3):
             if layer_filter == 4:
-                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter), 4, 2, 1, bias=False)
+                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter), kernel_size=4, stride=2, padding=1, bias=False)
                 layers[str(q+1)] = nn.BatchNorm2d(int(img_size*layer_filter))
                 layers[str(q+2)] = nn.LeakyReLU(0.2, inplace=True)
                 q=q+3
             else:
-                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter*2), 4, 2, 1, bias=False)
+                layers[str(q)] = nn.Conv2d(int(img_size*layer_filter), int(img_size*layer_filter*2), kernel_size=4, stride=2, padding=1, bias=False)
                 layers[str(q+1)] = nn.BatchNorm2d(int(img_size*layer_filter*2))
                 layers[str(q+2)] = nn.LeakyReLU(0.2, inplace=True)
+                layers[str(q+3)] = nn.Dropout3d(0.2)
+                q=q+4
                 layer_filter = layer_filter*2
-                q=q+3
         self.disc = nn.Sequential(layers)
-        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, 4, 1, 0, bias=False),
-                                       nn.Sigmoid())
+        self.outlayer1 = nn.Sequential(nn.Conv2d(int(img_size*layer_filter), 1, kernel_size=4, stride=1, padding=0, bias=False))
 
     def forward(self, img):
         out = self.inlayer(img)
@@ -214,7 +229,7 @@ class Encoder(nn.Module):
         )
         self.p5 = nn.Sequential(
             nn.Conv2d(img_size*4, img_size*4, 3, 2, 1),
-            nn.InstanceNorm2d(img_size),
+            nn.InstanceNorm2d(img_size*4),
             nn.LeakyReLU(0.2, False),
         )
         self.meanlin = nn.Linear(img_size*4*4*4, 256)
@@ -241,6 +256,15 @@ def reparameterize(mu, logvar):
     eps = torch.randn_like(std)
     return eps.mul(std) + mu
 
+class MyHingeLoss(torch.nn.Module):
+    def __init__(self):
+        super(MyHingeLoss, self).__init__()
+
+    def forward(self, output, target):
+        hinge_loss = 1 - torch.mul(output, target)
+        hinge_loss[hinge_loss < 0] = 0
+        return hinge_loss
+
 class RealativisticLoss(torch.nn.Module):
     def __init__(self):
         super(RealativisticLoss, self).__init__()
@@ -257,8 +281,5 @@ def weights_init_normal(m):
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find("BatchNorm2d") != -1:
-        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
-        torch.nn.init.constant_(m.bias.data, 0.0)
     for x in m.children():
         weights_init_normal(x)
