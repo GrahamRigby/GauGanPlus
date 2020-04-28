@@ -6,3 +6,5 @@ concatenate the image  and semantic input map, it rather just uses images output
 results than using an additional L1Loss regularizer in our Generator loss function. And it was able to better adapt to unseen Data.
 I also added some noise sampled from a Gaussian to the input images before being fed into the VAE Image Encoder due to the small
 dataset I was working with. 
+
+![](images/
