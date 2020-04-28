@@ -8,8 +8,8 @@ I also added some noise sampled from a Gaussian to the input images before being
 dataset I was working with. 
 
 
-![](EvalImages/test1.png)![](EvalImages/Pokemon1.png)
+![](EvalImages/test_map1.png)![](EvalImages/Pokemon1.png)
 
-![](EvalImages/test2.png)![](EvalImages/Pokemon2.png)
+![](EvalImages/test_map2.png)![](EvalImages/Pokemon2.png)
 
-![](EvalImages/test3.png)![](EvalImages/Pokemon3.png)
+![](EvalImages/test_map3.png)![](EvalImages/Pokemon3.png)
