@@ -1,0 +1,2 @@
+generator_model.pt filter=lfs diff=lfs merge=lfs -text
+multi_discriminator_model.pt filter=lfs diff=lfs merge=lfs -text

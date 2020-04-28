@@ -7,9 +7,3 @@ results than using an additional L1Loss regularizer in our Generator loss functi
 I also added some noise sampled from a Gaussian to the input images before being fed into the VAE Image Encoder due to the small
 dataset I was working with. 
 
-
-![](EvalImages/test_map1.png)![](EvalImages/Pokemon1.png)
-
-![](EvalImages/test_map2.png)![](EvalImages/Pokemon2.png)
-
-![](EvalImages/test_map3.png)![](EvalImages/Pokemon3.png)
